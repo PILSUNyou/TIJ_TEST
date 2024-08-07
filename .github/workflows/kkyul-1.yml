@@ -1,0 +1,153 @@
+name: 'kkyul-1'
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+      - 'src/**'
+      - 'build.gradle'
+      - 'Dockerfile'
+      - 'README.md'
+    branches:
+      - 'main'
+jobs:
+  build:
+    name: 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: jdk 19 설치
+        uses: actions/setup-java@v3
+        with:
+          java-version: '19'
+          distribution: 'temurin'
+          cache: 'gradle'
+      
+      - name: application-secret.yml 생성
+        run: |
+          cat <<EOF > src/main/resources/application-secret.yml
+          naver:
+            client:
+              id: ${{ secrets.NAVER_CLIENT_ID }}
+              secret: ${{ secrets.NAVER_CLIENT_SECRET }}
+            url:
+              search:
+                local: ${{ secrets.NAVER_URL_SEARCH_LOCAL }}
+
+          google:
+            api:
+              key: ${{ secrets.GOOGLE_API_KEY }}
+
+          kakao:
+            map:
+              appkey: ${{ secrets.KAKAO_MAP_APPKEY }}
+            api:
+              key: ${{ secrets.KAKAO_API_KEY }}
+
+          openai:
+            api-key: ${{ secrets.OPENAI_API_KEY }}
+
+          spring:
+            security:
+              oauth2:
+                client:
+                  registration:
+                    kakao:
+                      clientId: ${{ secrets.REGISTRATION_KAKAO_CLIENT_ID }}
+                    google:
+                      client-secret: ${{ secrets.REGISTRATION_GOOGLE_CLIENT_SECRET }}
+                    naver:
+                      client-secret: ${{ secrets.REGISTRATION_NAVER_CLIENT_SECRET }}
+
+            mail:
+              password: ${{ secrets.MAIL_PASSWORD }}
+          
+          custom:
+            security:
+              oauth2:
+                client:
+                  registration:
+                    kakao:
+                      devUser:
+                        oauthId: oauthId
+                        nickname: nickname
+          EOF
+      - name: gradlew 실행 권한 부여
+        run: chmod +x gradlew
+      - name: gradle 빌드
+        run: ./gradlew build -x test --no-daemon
+      - name: build 폴더를 캐시에 저장
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifact
+          path: build
+          retention-days: 1
+  tag:
+    name: 태그 생성
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag_version.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: mathieudutour/github-tag-action@v6.1
+        id: tag_version
+        with:
+          github_token: ${{ secrets.GHCR_TOKEN }}
+      - uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag_version.outputs.new_tag }}
+          release_name: Release ${{ steps.tag_version.outputs.new_tag }}
+          body: ${{ steps.tag_version.outputs.changelog }}
+
+  docker:
+    name: 도커 이미지 빌드와 푸시
+    runs-on: ubuntu-latest
+    needs: tag
+    steps:
+      - uses: actions/checkout@v3
+      - name: build 가져오기
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifact
+          path: build
+      - name: Docker Buildx 설치
+        uses: docker/setup-buildx-action@v2
+      - name: ghcr.io 로그인
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+      - name: set lower case owner name
+        run: |
+          echo "OWNER_LC=${OWNER,,}" >> ${GITHUB_ENV}
+        env:
+          OWNER: '${{ github.repository_owner }}'
+      - name: 빌드 앤 푸시
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/market-1:${{ needs.tag.outputs.tag_name }},
+            ghcr.io/${{ env.OWNER_LC }}/market-1:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: 도커 배포
+    needs: [tag, docker]
+    runs-on: kkyul-1
+    steps:
+      - name: Check Docker Version
+        run: docker --version
+      - name: Login to ghcr
+        run: echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+      - name: Docker pull and run
+        run: |
+          docker pull ghcr.io/${{ github.actor }}/trip_in_jeju-1:latest
+          docker stop trip_in_jeju-1 || true
+          docker rm trip_in_jeju-1 || true
+          docker run -d -p 80:8080 --name trip_in_jeju-1 --restart always ghcr.io/${{ github.actor }}/trip_in_jeju-1:latest
