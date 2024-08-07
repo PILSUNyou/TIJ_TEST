@@ -131,8 +131,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ env.OWNER_LC }}/market-1:${{ needs.tag.outputs.tag_name }},
-            ghcr.io/${{ env.OWNER_LC }}/market-1:latest
+            ghcr.io/${{ env.OWNER_LC }}/trip_in_jeju-1:${{ needs.tag.outputs.tag_name }},
+            ghcr.io/${{ env.OWNER_LC }}/trip_in_jeju-1:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
